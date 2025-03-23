@@ -66,8 +66,8 @@ export interface AnalysisReport {
 // Function to generate comprehensive analysis report using GPT-4o
 export async function generateAnalysisReport(
   transcripts: string[], 
-  topic: string,
-  analysisType: 'health' | 'symptoms' | 'treatment' | 'general' = 'health'
+  question: string | undefined,
+  analysisType: string
 ): Promise<AnalysisReport> {
   try {
     // Check if OpenAI API key is set
@@ -81,21 +81,29 @@ export async function generateAnalysisReport(
     const combinedTranscripts = transcripts.join('\n\n');
     
     // Create system prompt based on analysis type
-    let systemPrompt = `You are an expert health analyst AI. Analyze the provided health-related memos and generate a comprehensive analysis report on the topic: "${topic}".`;
+    let systemPrompt = `You are an expert health analyst AI. Analyze the provided health-related memos`;
     
-    switch (analysisType) {
-      case 'symptoms':
-        systemPrompt += ' Focus on symptom patterns, frequency, severity, and potential correlations between symptoms.';
-        break;
-      case 'treatment':
-        systemPrompt += ' Focus on treatment efficacy, side effects, adherence patterns, and recommendations for optimizing treatment outcomes.';
-        break;
-      case 'health':
-        systemPrompt += ' Focus on overall health trends, risk factors, protective factors, and lifestyle influences on health outcomes.';
-        break;
-      case 'general':
-      default:
-        systemPrompt += ' Provide a balanced analysis covering all relevant health aspects mentioned in the data.';
+    if (question) {
+      systemPrompt += ` with a focus on answering: "${question}"`;
+    }
+    
+    // Add focus areas based on analysis type
+    if (analysisType === 'health') {
+      systemPrompt += ". Pay special attention to physical symptoms, vital signs, and overall health status.";
+    } else if (analysisType === 'symptoms') {
+      systemPrompt += ". Focus on identifying, tracking, and analyzing symptoms and their patterns.";
+    } else if (analysisType === 'treatment') {
+      systemPrompt += ". Evaluate treatment effectiveness, medication responses, and therapeutic interventions.";
+    } else if (analysisType === 'doctor') {
+      systemPrompt = 
+        "You are preparing a concise summary for a doctor. Select and lightly edit direct patient quotes " +
+        "from provided voice memos explicitly relevant to the appointment reason. Preserve original phrasing as much as possible. " +
+        "Do NOT add interpretations or analysis beyond minimal clarification for readability.";
+    } else if (analysisType === 'therapist') {
+      systemPrompt = 
+        "You are a thoughtful, emotionally-aware therapeutic assistant. Synthesize provided voice memos " +
+        "into concise, insightful reports highlighting emotional states, mood fluctuations, coping strategies, " +
+        "and stressors. Your primary goal is to help user and their therapist gain deeper clarity and enhance therapeutic support.";
     }
     
     // Make the API call to GPT-4o
@@ -117,7 +125,7 @@ export async function generateAnalysisReport(
         },
         {
           role: "user",
-          content: `Here are my health memos for analysis on the topic "${topic}":\n\n${combinedTranscripts}`
+          content: `Here are my health memos for analysis:\n\n${combinedTranscripts}`
         }
       ]
     });
@@ -139,7 +147,8 @@ export async function generateAnalysisReport(
 }
 
 // Mock data for when API key is not available
-function getMockAnalysisReport(type: 'health' | 'symptoms' | 'treatment' | 'general'): AnalysisReport {
+function getMockAnalysisReport(analysisType: string): AnalysisReport {
+  // Basic report structure
   const baseReport: AnalysisReport = {
     executiveSummary: "This analysis is based on a series of health memos recorded over the past 30 days. The data suggests mild to moderate hypertension with associated symptoms of morning headaches and occasional dizziness. Lifestyle factors including diet and stress appear to be contributing factors.",
     detailedFindings: [
@@ -216,13 +225,33 @@ function getMockAnalysisReport(type: 'health' | 'symptoms' | 'treatment' | 'gene
     }
   };
 
-  // Customize based on type if needed
-  switch (type) {
+  // Customize based on analysis type
+  switch (analysisType) {
     case 'symptoms':
       baseReport.executiveSummary = "Analysis focuses on symptom patterns from health memos over 30 days. Primary symptoms include morning headaches, dizziness upon standing, and occasional fatigue. Symptom intensity appears to fluctuate with lifestyle factors.";
       break;
     case 'treatment':
       baseReport.executiveSummary = "Analysis of treatment effects based on health memos over 30 days. Current approaches show partial efficacy with room for optimization. Side effects appear minimal but adherence could be improved.";
+      break;
+    case 'doctor':
+      baseReport.executiveSummary = "Patient requested appointment for hypertension concerns. The following are direct quotes from their health memos relevant to this concern.";
+      baseReport.detailedFindings = [
+        "\"I measured my blood pressure this morning, it was 135/85.\" (May 15)",
+        "\"The headaches seem to be worse when I don't get enough sleep.\" (May 12)",
+        "\"I noticed my ankles were a bit swollen tonight after standing all day.\" (May 8)",
+        "\"I've been trying to reduce salt in my diet as Dr. Johnson suggested.\" (May 5)",
+        "\"Felt dizzy this morning when I stood up quickly from bed.\" (May 2)"
+      ];
+      break;
+    case 'therapist':
+      baseReport.executiveSummary = "Emotional health assessment based on client's voice memos. Client reports fluctuating mood with stress as a primary trigger. Sleep difficulties and work-related stress appear to be significant factors affecting emotional wellbeing.";
+      baseReport.detailedFindings = [
+        "Emotional patterns show increased anxiety in morning hours",
+        "Client expresses frustration with work-life balance challenges",
+        "Sleep disruption appears to significantly impact emotional regulation",
+        "Social withdrawal noted during periods of increased stress",
+        "Client mentions positive emotional response to outdoor activities"
+      ];
       break;
     default:
       // Use the base report

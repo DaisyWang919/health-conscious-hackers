@@ -1,9 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Mic, Square, Save, Loader2, ArrowLeft } from 'lucide-react';
+import { Mic, Square, Save, Loader2, ArrowLeft, Play, Pause, RotateCcw, Volume2, VolumeX, Trash2, CheckCircle, Lightbulb, Heart, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useMemos } from '../hooks/useMemos';
 import { transcribeAudio } from '../utils/openai';
+import RecordingPrompts from '../components/RecordingPrompts';
+import AudioWaveform from '../components/AudioWaveform';
+import { getRandomPrompts } from '../utils/promptSuggestions';
 
 const RecordMemo = () => {
   const [isRecording, setIsRecording] = useState(false);
@@ -14,41 +17,77 @@ const RecordMemo = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [audioMimeType, setAudioMimeType] = useState('audio/webm');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [showPrompts, setShowPrompts] = useState(true); // Changed to true by default
+  const [recordingVolume, setRecordingVolume] = useState<number[]>([]);
+  const [isMuted, setIsMuted] = useState(false);
+  const [currentStep, setCurrentStep] = useState<'ready' | 'recording' | 'review' | 'saving'>('ready');
+  const [hasReadyToSave, setHasReadyToSave] = useState(false);
+  const [supportedFormats, setSupportedFormats] = useState<Record<string, boolean>>({});
+  const [quickSuggestions, setQuickSuggestions] = useState<string[]>([]);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const audioBlobRef = useRef<Blob | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const visualizerCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
+  const volumeMonitorRef = useRef<number | null>(null);
+  
   const navigate = useNavigate();
   const { addMemo } = useMemos();
 
+  // Clean up resources when component unmounts
   useEffect(() => {
     return () => {
+      // Clean up timers and audio resources when component unmounts
       if (timerRef.current) {
         window.clearInterval(timerRef.current);
+      }
+      if (volumeMonitorRef.current) {
+        window.clearInterval(volumeMonitorRef.current);
       }
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+      }
     };
   }, [audioUrl]);
 
-  // Test audio playback compatibility
+  // Check browser audio compatibility
   useEffect(() => {
-    // Check which audio formats are supported
     const audio = document.createElement('audio');
-    const supportedFormats = {
-      webm: !!audio.canPlayType('audio/webm'),
-      webmOpus: !!audio.canPlayType('audio/webm;codecs=opus'),
-      ogg: !!audio.canPlayType('audio/ogg'),
-      oggOpus: !!audio.canPlayType('audio/ogg;codecs=opus'),
-      mp4: !!audio.canPlayType('audio/mp4'),
-      mpeg: !!audio.canPlayType('audio/mpeg'),
-      wav: !!audio.canPlayType('audio/wav')
+    const formats = {
+      'audio/webm': !!audio.canPlayType('audio/webm'),
+      'audio/webm;codecs=opus': !!audio.canPlayType('audio/webm;codecs=opus'),
+      'audio/ogg': !!audio.canPlayType('audio/ogg'),
+      'audio/ogg;codecs=opus': !!audio.canPlayType('audio/ogg;codecs=opus'),
+      'audio/mp4': !!audio.canPlayType('audio/mp4'),
+      'audio/mpeg': !!audio.canPlayType('audio/mpeg'),
+      'audio/wav': !!audio.canPlayType('audio/wav')
     };
     
-    console.log('Browser audio support:', supportedFormats);
+    console.log('Browser audio support:', formats);
+    setSupportedFormats(formats);
   }, []);
+
+  // Load quick suggestions
+  useEffect(() => {
+    setQuickSuggestions(getRandomPrompts(3));
+  }, []);
+
+  // Check if transcript and audio are ready to save
+  useEffect(() => {
+    if (currentStep === 'review' && transcript && audioBlobRef.current && !isTranscribing) {
+      setHasReadyToSave(true);
+    } else {
+      setHasReadyToSave(false);
+    }
+  }, [currentStep, transcript, isTranscribing]);
 
   const handleStartRecording = async () => {
     try {
@@ -57,11 +96,54 @@ const RecordMemo = () => {
       setTranscript('');
       setAudioUrl(null);
       setTranscriptionError(null);
+      setRecordingVolume([]);
+      setCurrentStep('recording');
+      setIsPlaying(false);
+      
+      // Clean up previous audio element
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+        audioElementRef.current = null;
+      }
       
       // Get audio stream
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { 
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
       
-      // Create a prioritized list of MIME types to try
+      // Set up audio processing for visualization
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      audioAnalyserRef.current = analyser;
+      
+      // Monitor audio levels for visualization
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      
+      volumeMonitorRef.current = window.setInterval(() => {
+        if (analyser) {
+          analyser.getByteFrequencyData(dataArray);
+          // Calculate volume level from frequency data
+          const average = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength;
+          const normalizedVolume = Math.min(100, Math.max(0, average * 1.5)); // Amplify for better visualization
+          
+          setRecordingVolume(prev => {
+            const newVolumes = [...prev, normalizedVolume];
+            // Keep last 50 values for visualization
+            return newVolumes.length > 50 ? newVolumes.slice(-50) : newVolumes;
+          });
+        }
+      }, 100);
+      
+      // Select the appropriate MIME type
       const mimeTypesToTry = [
         'audio/webm',
         'audio/webm;codecs=opus',
@@ -72,7 +154,6 @@ const RecordMemo = () => {
         'audio/wav'
       ];
       
-      // Find the first supported MIME type
       let selectedMimeType = '';
       for (const mimeType of mimeTypesToTry) {
         if (MediaRecorder.isTypeSupported(mimeType)) {
@@ -81,19 +162,17 @@ const RecordMemo = () => {
         }
       }
       
-      // If no supported type is found, default to audio/webm
       if (!selectedMimeType) {
         selectedMimeType = 'audio/webm';
         console.warn('No supported MIME types found, defaulting to audio/webm');
       }
       
-      // Save the selected MIME type for later use
       setAudioMimeType(selectedMimeType);
-      console.log('Using MIME type for recording:', selectedMimeType);
       
-      // Create MediaRecorder with the supported MIME type
+      // Create and configure the MediaRecorder
       mediaRecorderRef.current = new MediaRecorder(stream, { 
-        mimeType: selectedMimeType 
+        mimeType: selectedMimeType,
+        audioBitsPerSecond: 128000
       });
       
       mediaRecorderRef.current.ondataavailable = (event) => {
@@ -104,43 +183,41 @@ const RecordMemo = () => {
       
       mediaRecorderRef.current.onstop = async () => {
         try {
+          if (volumeMonitorRef.current) {
+            clearInterval(volumeMonitorRef.current);
+            volumeMonitorRef.current = null;
+          }
+          
           // Create a blob with the correct MIME type
           const audioBlob = new Blob(audioChunksRef.current, { type: selectedMimeType });
           audioBlobRef.current = audioBlob;
+          
+          // Set up the audio URL
           const url = URL.createObjectURL(audioBlob);
           setAudioUrl(url);
           
-          // Check if the audio is playable
-          const audio = new Audio();
-          audio.src = url;
-          
-          audio.onloadedmetadata = () => {
-            console.log('Audio metadata loaded successfully');
-          };
-          
-          audio.onerror = (e) => {
-            console.error('Error loading audio:', e);
-          };
-          
           // Start transcription
           setIsTranscribing(true);
+          setCurrentStep('review');
+          
           try {
             // Check if OpenAI API key is set
             if (!import.meta.env.VITE_OPENAI_API_KEY || 
                 import.meta.env.VITE_OPENAI_API_KEY === 'sk-your-openai-api-key-here') {
-              // If no API key, use placeholder text
+              // If no API key, use placeholder text after a short delay
               setTimeout(() => {
                 setTranscript("I've been experiencing some mild headaches in the morning " +
                   "and occasional dizziness when standing up too quickly. My blood pressure " +
                   "readings have been a bit higher than usual, around 135/85.");
                 setIsTranscribing(false);
-              }, 1000);
+              }, 1200);
               
               toast.warning('Using placeholder transcription. Add your OpenAI API key in .env.local for actual transcription.');
             } else {
               // Actual API call to OpenAI Whisper
               const transcribedText = await transcribeAudio(audioBlob);
               setTranscript(transcribedText);
+              setIsTranscribing(false);
             }
           } catch (error) {
             console.error('Transcription error:', error);
@@ -151,17 +228,18 @@ const RecordMemo = () => {
               setTranscriptionError('Failed to transcribe audio');
               toast.error('Failed to transcribe audio');
             }
-          } finally {
             setIsTranscribing(false);
           }
         } catch (error) {
           console.error('Error processing recorded audio:', error);
-          toast.error('Failed to process the recorded audio');
+          toast.error('Failed to process the recording');
+          setIsTranscribing(false);
+          setCurrentStep('ready');
         }
       };
       
-      // Start recording with a short time slice to get data frequently
-      mediaRecorderRef.current.start(100); 
+      // Start recording with short time slices for more frequent data
+      mediaRecorderRef.current.start(250); 
       setIsRecording(true);
       
       // Set up timer to track recording duration
@@ -173,6 +251,7 @@ const RecordMemo = () => {
     } catch (error) {
       console.error('Error accessing microphone:', error);
       toast.error('Could not access microphone. Please check permissions.');
+      setCurrentStep('ready');
     }
   };
 
@@ -181,7 +260,7 @@ const RecordMemo = () => {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       
-      // Get all tracks from the stream and stop them
+      // Stop all tracks from the stream
       mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
       
       if (timerRef.current) {
@@ -191,6 +270,43 @@ const RecordMemo = () => {
     }
   };
 
+  const handleCancelRecording = () => {
+    // Stop recording if in progress
+    if (isRecording && mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      
+      if (timerRef.current) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    
+    // Clean up audio resources
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+    
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.src = '';
+      audioElementRef.current = null;
+    }
+    
+    // Reset state
+    setIsRecording(false);
+    setRecordingTime(0);
+    setAudioUrl(null);
+    setTranscript('');
+    setTranscriptionError(null);
+    audioChunksRef.current = [];
+    audioBlobRef.current = null;
+    setCurrentStep('ready');
+    setIsTranscribing(false);
+    setRecordingVolume([]);
+    setIsPlaying(false);
+  };
+
   const handleSave = async () => {
     if (!transcript || !audioBlobRef.current) {
       toast.error('Nothing to save. Please record a memo first.');
@@ -198,9 +314,10 @@ const RecordMemo = () => {
     }
     
     setIsSaving(true);
+    setCurrentStep('saving');
     
     try {
-      // Save memo to IndexedDB with the correct MIME type
+      // Save memo to database
       await addMemo({
         transcript,
         audioBlob: audioBlobRef.current,
@@ -213,9 +330,177 @@ const RecordMemo = () => {
     } catch (error) {
       console.error('Error saving memo:', error);
       toast.error('Failed to save memo. Please try again.');
-    } finally {
       setIsSaving(false);
+      setCurrentStep('review');
     }
+  };
+
+  // Get an ordered list of MIME types to try, based on browser support
+  const getOrderedMimeTypesToTry = (currentMimeType: string): string[] => {
+    // Start with the current MIME type
+    const result = [currentMimeType];
+    
+    // Add supported types that aren't the current type
+    const supportedMimeTypes = [
+      'audio/webm',
+      'audio/webm;codecs=opus',
+      'audio/ogg',
+      'audio/ogg;codecs=opus',
+      'audio/mpeg',
+      'audio/mp4',
+      'audio/wav'
+    ];
+    
+    // First add the types the browser says it supports
+    for (const mimeType of supportedMimeTypes) {
+      if (mimeType !== currentMimeType && supportedFormats[mimeType]) {
+        result.push(mimeType);
+      }
+    }
+    
+    // Then add the rest as fallbacks
+    for (const mimeType of supportedMimeTypes) {
+      if (mimeType !== currentMimeType && !supportedFormats[mimeType] && !result.includes(mimeType)) {
+        result.push(mimeType);
+      }
+    }
+    
+    return result;
+  };
+  
+  // Try to play audio with a specific MIME type
+  const tryPlayWithMimeType = async (
+    audioBlob: Blob, 
+    mimeType: string, 
+    tryIndex: number = 0
+  ): Promise<boolean> => {
+    try {
+      console.log(`Trying to play with MIME type ${mimeType} (attempt ${tryIndex + 1})`);
+      
+      // Create a blob with the specific MIME type
+      const typedBlob = new Blob([audioBlob], { type: mimeType });
+      const url = URL.createObjectURL(typedBlob);
+      
+      // Create an audio element and set it up
+      const audio = new Audio();
+      audio.src = url;
+      
+      // Return a promise that resolves when the audio starts playing
+      // or rejects if there's an error
+      return new Promise((resolve, reject) => {
+        // Set up error handling - don't show user-facing errors here
+        audio.onerror = (e) => {
+          console.error(`Error playing with MIME type ${mimeType}:`, e);
+          URL.revokeObjectURL(url);
+          reject(new Error(`Failed to play with MIME type ${mimeType}`));
+        };
+        
+        // Set up success handling
+        audio.oncanplay = () => {
+          // Store the URL and audio element
+          audioElementRef.current = audio;
+          
+          // Set up handlers for playback end
+          audio.onended = () => {
+            setIsPlaying(false);
+          };
+          
+          // Set up play/pause event handlers
+          audio.onplay = () => setIsPlaying(true);
+          audio.onpause = () => setIsPlaying(false);
+          
+          // Play the audio
+          audio.play()
+            .then(() => {
+              resolve(true);
+            })
+            .catch((error) => {
+              console.error(`Play failed for MIME type ${mimeType}:`, error);
+              URL.revokeObjectURL(url);
+              reject(error);
+            });
+        };
+        
+        // Set a timeout to prevent waiting too long
+        setTimeout(() => {
+          if (!audio.paused) {
+            // If playing, it's good
+            resolve(true);
+          } else {
+            // If still not playing after timeout, reject
+            URL.revokeObjectURL(url);
+            reject(new Error('Playback timeout'));
+          }
+        }, 2000);
+      });
+    } catch (error) {
+      console.error(`Error setting up audio with MIME type ${mimeType}:`, error);
+      return false;
+    }
+  };
+
+  // Improved toggle playback function
+  const togglePlayback = async () => {
+    // If currently playing, just pause
+    if (isPlaying && audioElementRef.current) {
+      audioElementRef.current.pause();
+      setIsPlaying(false);
+      return;
+    }
+    
+    // If we have a valid audio element that's just paused, resume it
+    if (audioElementRef.current && !audioElementRef.current.ended) {
+      try {
+        await audioElementRef.current.play();
+        setIsPlaying(true);
+        return;
+      } catch (err) {
+        // If resuming fails, try to recreate the audio element
+        console.warn('Could not resume playback, will try recreating audio element:', err);
+      }
+    }
+    
+    // If we don't have a blob, can't play anything
+    if (!audioBlobRef.current) {
+      console.error('No audio blob available for playback');
+      return;
+    }
+    
+    // Try to play the audio with different MIME types
+    const currentMimeType = audioMimeType || 'audio/webm';
+    const mimeTypesToTry = getOrderedMimeTypesToTry(currentMimeType);
+    
+    // Try playing with each MIME type in sequence until one works
+    let success = false;
+    let lastError = null;
+    
+    for (let i = 0; i < mimeTypesToTry.length; i++) {
+      try {
+        success = await tryPlayWithMimeType(audioBlobRef.current, mimeTypesToTry[i], i);
+        if (success) {
+          setIsPlaying(true);
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+        // Continue to the next format
+      }
+    }
+    
+    if (!success) {
+      console.error('All playback attempts failed:', lastError);
+      toast.error('Could not play audio - no supported format found', {
+        duration: 3000,
+        position: 'bottom-center'
+      });
+    }
+  };
+
+  const toggleMute = () => {
+    if (!audioElementRef.current) return;
+    
+    audioElementRef.current.muted = !audioElementRef.current.muted;
+    setIsMuted(!isMuted);
   };
 
   const formatTime = (seconds: number) => {
@@ -224,118 +509,323 @@ const RecordMemo = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Test audio playback of the recording
-  const testPlayback = () => {
-    if (!audioUrl) return;
+  const handleSelectPrompt = (prompt: string) => {
+    // If we already have some transcript, add a space
+    let newTranscript = transcript ? transcript + " " : "";
     
-    const audio = new Audio(audioUrl);
-    audio.play().catch(err => {
-      console.error('Playback test failed:', err);
-    });
+    // Add the prompt
+    setTranscript(newTranscript + prompt);
+    
+    // Focus the textarea if we've completed recording
+    if (currentStep === 'review') {
+      const textareaElement = document.getElementById('transcript-textarea');
+      if (textareaElement) {
+        textareaElement.focus();
+      }
+    }
+  };
+
+  const refreshSuggestions = () => {
+    setQuickSuggestions(getRandomPrompts(3));
+  };
+
+  // Render different UI based on current step
+  const renderContent = () => {
+    switch (currentStep) {
+      case 'ready':
+        return (
+          <div className="flex flex-col items-center justify-center py-8">
+            <div 
+              className="relative w-40 h-40 rounded-full bg-blue-50 border-8 border-blue-100 flex items-center justify-center mb-6 cursor-pointer hover:bg-blue-100 transition-colors"
+              onClick={handleStartRecording}
+            >
+              <div className="absolute inset-0 rounded-full bg-blue-500 bg-opacity-5 animate-pulse"></div>
+              <Mic size={48} className="text-blue-500" />
+            </div>
+            
+            <h2 className="text-lg font-medium text-gray-800 mb-2">Record your health memo</h2>
+            <p className="text-gray-500 text-center max-w-sm">
+              Tap the microphone and speak clearly about your symptoms, medication effects, or health concerns.
+            </p>
+            
+            {/* Quick Suggestion Cards - Always visible */}
+            <div className="mt-6 w-full max-w-md">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-600 flex items-center">
+                  <Lightbulb size={16} className="mr-1.5 text-blue-500" />
+                  Suggestion prompts:
+                </p>
+                <button 
+                  onClick={refreshSuggestions}
+                  className="text-xs flex items-center text-gray-500 hover:text-blue-500"
+                >
+                  <RefreshCw size={12} className="mr-1" />
+                  Refresh
+                </button>
+              </div>
+              
+              <div className="space-y-2">
+                {quickSuggestions.map((prompt, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleStartRecording()}
+                    className="w-full text-left p-3 bg-white hover:bg-blue-50 text-gray-700 hover:text-blue-600 rounded-lg border border-gray-200 shadow-sm hover:shadow transition-all"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+              
+              <button
+                onClick={() => setShowPrompts(!showPrompts)}
+                className="mt-4 text-sm text-gray-500 hover:text-blue-600 flex items-center mx-auto"
+              >
+                <Lightbulb size={14} className="mr-1" />
+                {showPrompts ? "Hide more suggestions" : "Show more suggestions"}
+              </button>
+              
+              {showPrompts && (
+                <div className="mt-3">
+                  <RecordingPrompts onSelectPrompt={handleStartRecording} />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+        
+      case 'recording':
+        return (
+          <div className="flex flex-col items-center justify-center py-8">
+            <div className="relative w-full max-w-sm mb-8">
+              <div className="h-32 bg-blue-50 rounded-xl border border-blue-100 overflow-hidden p-4 flex items-end justify-center">
+                <AudioWaveform values={recordingVolume} />
+              </div>
+              
+              <div className="absolute top-4 left-4 bg-red-100 px-3 py-1 rounded-full flex items-center">
+                <div className="w-2 h-2 rounded-full bg-red-500 mr-2 animate-pulse"></div>
+                <span className="text-red-600 text-sm font-medium">Recording</span>
+              </div>
+              
+              <div className="absolute bottom-4 right-4 bg-white bg-opacity-90 px-3 py-1 rounded-lg">
+                <span className="text-gray-800 font-medium">{formatTime(recordingTime)}</span>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={handleCancelRecording}
+                className="p-3 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+              >
+                <Trash2 size={20} />
+              </button>
+              
+              <button
+                onClick={handleStopRecording}
+                className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors"
+              >
+                <Square size={24} fill="white" className="text-white" />
+              </button>
+            </div>
+            
+            <p className="mt-6 text-gray-500 text-center max-w-sm">
+              Speak clearly about your health. Tap the square button when you're finished.
+            </p>
+          </div>
+        );
+        
+      case 'review':
+        return (
+          <div className="py-4">
+            {audioBlobRef.current && (
+              <div className="mb-8">
+                <h3 className="text-gray-700 font-medium mb-2">Review Recording</h3>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center">
+                      <button
+                        onClick={togglePlayback}
+                        className={`p-2 rounded-full mr-3 hover:bg-blue-200 transition-colors ${
+                          isPlaying ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                      </button>
+                      <span className="text-gray-600 text-sm">
+                        {formatTime(recordingTime)} recorded
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={toggleMute}
+                        className="p-1.5 text-gray-500 hover:text-gray-700 rounded-full"
+                      >
+                        {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                      </button>
+                      <button
+                        onClick={handleCancelRecording}
+                        className="p-1.5 text-gray-500 hover:text-red-500 rounded-full"
+                        title="Discard recording"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <button
+                        onClick={handleStartRecording}
+                        className="p-1.5 text-gray-500 hover:text-blue-500 rounded-full"
+                        title="Record again"
+                      >
+                        <RotateCcw size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-2">
+                    <AudioWaveform values={recordingVolume} isStatic />
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div className="mb-4">
+              <h3 className="text-gray-700 font-medium mb-2">
+                {isTranscribing ? "Transcribing your memo..." : "Edit Transcript"}
+              </h3>
+              
+              {isTranscribing ? (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 flex flex-col items-center justify-center min-h-[160px]">
+                  <Loader2 size={28} className="text-blue-500 animate-spin mb-3" />
+                  <p className="text-gray-500">Converting your speech to text...</p>
+                </div>
+              ) : transcriptionError ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 min-h-[160px]">
+                  <p className="text-red-600 mb-2">{transcriptionError}</p>
+                  <p className="text-gray-600 text-sm">
+                    Please check your OpenAI API key in the .env.local file or try recording again.
+                  </p>
+                </div>
+              ) : (
+                <div className="relative">
+                  <textarea
+                    id="transcript-textarea"
+                    className="w-full border border-gray-200 rounded-lg p-4 min-h-[160px] focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    value={transcript}
+                    onChange={(e) => setTranscript(e.target.value)}
+                    placeholder="Your transcript will appear here. You can edit it if needed."
+                    rows={6}
+                  />
+                </div>
+              )}
+            </div>
+            
+            {/* Suggestion prompts in review mode */}
+            <div className="mt-3 mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-600 flex items-center">
+                  <Lightbulb size={16} className="mr-1.5 text-blue-500" />
+                  Add to your notes:
+                </p>
+                <button 
+                  onClick={refreshSuggestions}
+                  className="text-xs flex items-center text-gray-500 hover:text-blue-500"
+                >
+                  <RefreshCw size={12} className="mr-1" />
+                  Refresh
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {quickSuggestions.map((prompt, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleSelectPrompt(prompt)}
+                    className="text-left p-2.5 bg-white hover:bg-blue-50 text-gray-700 hover:text-blue-600 rounded border border-gray-200 text-sm transition-colors"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+              
+              {showPrompts && (
+                <div className="mt-3">
+                  <RecordingPrompts onSelectPrompt={handleSelectPrompt} />
+                </div>
+              )}
+              
+              <button
+                onClick={() => setShowPrompts(!showPrompts)}
+                className="mt-3 text-sm text-gray-500 hover:text-blue-600 flex items-center mx-auto"
+              >
+                <Lightbulb size={14} className="mr-1" />
+                {showPrompts ? "Hide more suggestions" : "Show more suggestions"}
+              </button>
+            </div>
+            
+            <div className="flex justify-between mt-6">
+              <button
+                onClick={handleCancelRecording}
+                className="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              
+              <button
+                onClick={handleSave}
+                disabled={!hasReadyToSave}
+                className={`flex items-center px-5 py-2 rounded-lg ${
+                  hasReadyToSave 
+                    ? 'bg-blue-500 hover:bg-blue-600 text-white' 
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                } transition-colors`}
+              >
+                <Save size={18} className="mr-2" />
+                Save Memo
+              </button>
+            </div>
+          </div>
+        );
+        
+      case 'saving':
+        return (
+          <div className="flex flex-col items-center justify-center py-16">
+            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+              {isSaving ? (
+                <Loader2 size={36} className="text-blue-500 animate-spin" />
+              ) : (
+                <CheckCircle size={36} className="text-green-500" />
+              )}
+            </div>
+            
+            <h2 className="text-xl font-medium text-gray-800 mb-2">
+              {isSaving ? "Saving your memo..." : "Memo saved!"}
+            </h2>
+            
+            <p className="text-gray-500 text-center">
+              {isSaving 
+                ? "Just a moment while we save your health information." 
+                : "Your health memo has been saved successfully."}
+            </p>
+          </div>
+        );
+    }
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6">
+    <div className="max-w-3xl mx-auto p-4 sm:p-6">
       <button 
-        onClick={() => navigate(-1)} 
+        onClick={() => navigate('/')} 
         className="flex items-center text-gray-600 hover:text-gray-900 mb-6"
       >
         <ArrowLeft size={20} className="mr-1" />
         Back
       </button>
       
-      <h1 className="text-2xl font-bold text-gray-800 mb-8">Record Health Memo</h1>
+      <h1 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+        Record Health Memo
+        <Heart size={20} className="ml-2 text-pink-500" />
+      </h1>
       
-      <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-md">
-        <div className="flex flex-col items-center justify-center mb-8">
-          <div className="w-32 h-32 rounded-full bg-blue-50 border-4 border-blue-100 flex items-center justify-center mb-4">
-            {isRecording ? (
-              <div 
-                className="w-16 h-16 bg-red-500 rounded-lg cursor-pointer flex items-center justify-center"
-                onClick={handleStopRecording}
-              >
-                <Square size={24} className="text-white" />
-              </div>
-            ) : (
-              <div 
-                className={`w-20 h-20 ${isTranscribing ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600 cursor-pointer'} transition-colors rounded-full flex items-center justify-center`}
-                onClick={isTranscribing ? undefined : handleStartRecording}
-              >
-                <Mic size={32} className="text-white" />
-              </div>
-            )}
-          </div>
-          
-          {isRecording ? (
-            <div className="text-center">
-              <p className="text-xl font-semibold text-red-500">{formatTime(recordingTime)}</p>
-              <p className="text-gray-500">Recording... (Format: {audioMimeType.split('/')[1]})</p>
-            </div>
-          ) : audioUrl ? (
-            <div className="text-center">
-              <p className="text-gray-700 font-medium">Recording complete</p>
-              <audio className="mt-4" controls src={audioUrl} />
-              <p className="text-xs text-gray-500 mt-1">Format: {audioMimeType.split('/')[1]}</p>
-            </div>
-          ) : (
-            <p className="text-gray-600">
-              {isTranscribing ? 'Processing audio...' : 'Tap to start recording'}
-            </p>
-          )}
-        </div>
-        
-        <div className="mt-8">
-          <h3 className="text-lg font-medium text-gray-800 mb-2">Transcript</h3>
-          {isTranscribing ? (
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 min-h-32 flex flex-col items-center justify-center">
-              <Loader2 size={24} className="animate-spin text-blue-500 mb-2" />
-              <p className="text-gray-500">Transcribing your audio...</p>
-            </div>
-          ) : transcript ? (
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 min-h-32">
-              <p className="text-gray-800">{transcript}</p>
-            </div>
-          ) : transcriptionError ? (
-            <div className="border border-red-200 rounded-lg p-4 bg-red-50 min-h-32">
-              <p className="text-red-600">{transcriptionError}</p>
-              <p className="text-gray-600 mt-2 text-sm">
-                Please check your OpenAI API key in the .env.local file.
-              </p>
-            </div>
-          ) : (
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 min-h-32 flex items-center justify-center">
-              <p className="text-gray-400 italic">
-                {isRecording 
-                  ? "Recording in progress..." 
-                  : "Record a voice memo to see the transcript"}
-              </p>
-            </div>
-          )}
-        </div>
-        
-        <div className="mt-8 flex justify-end">
-          <button
-            onClick={handleSave}
-            disabled={!transcript || isSaving || isTranscribing}
-            className={`flex items-center px-6 py-2 rounded-lg ${
-              !transcript || isSaving || isTranscribing
-                ? 'bg-gray-300 cursor-not-allowed' 
-                : 'bg-blue-500 hover:bg-blue-600 text-white'
-            }`}
-          >
-            {isSaving ? (
-              <>
-                <Loader2 size={20} className="mr-2 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              <>
-                <Save size={20} className="mr-2" />
-                Save Memo
-              </>
-            )}
-          </button>
-        </div>
+      <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6 shadow-md">
+        {renderContent()}
       </div>
     </div>
   );

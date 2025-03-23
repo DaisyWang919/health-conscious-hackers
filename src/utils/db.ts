@@ -12,6 +12,16 @@ export interface MemoWithAudio extends Memo {
   audioBlob: Blob;
 }
 
+export interface Report {
+  id: string;
+  title: string;
+  topic: string;
+  analysisType: string;
+  date: string;
+  reportContent: string; // JSON stringified report content
+  memoIds: string; // Comma-separated list of memo IDs used in the report
+}
+
 // SQLite database class
 class SqliteDatabase {
   private db: Database | null = null;
@@ -50,6 +60,27 @@ class SqliteDatabase {
           this.db.exec(`ALTER TABLE memos ADD COLUMN audioMimeType TEXT`);
           await this.saveDb();
         }
+        
+        // Check if we need to create the reports table
+        const hasReportsTable = this.db.exec(`
+          SELECT name FROM sqlite_master WHERE type='table' AND name='reports'
+        `);
+        
+        if (hasReportsTable.length === 0 || hasReportsTable[0].values.length === 0) {
+          // Create the reports table if it doesn't exist
+          this.db.exec(`
+            CREATE TABLE reports (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              analysisType TEXT NOT NULL,
+              date TEXT NOT NULL,
+              reportContent TEXT NOT NULL,
+              memoIds TEXT NOT NULL
+            )
+          `);
+          await this.saveDb();
+        }
       } else {
         // Otherwise, create a new database
         this.db = new SQL.Database();
@@ -61,6 +92,19 @@ class SqliteDatabase {
             transcript TEXT NOT NULL,
             date TEXT NOT NULL,
             audioMimeType TEXT
+          );
+        `);
+        
+        // Create the reports table
+        this.db.run(`
+          CREATE TABLE IF NOT EXISTS reports (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            analysisType TEXT NOT NULL,
+            date TEXT NOT NULL,
+            reportContent TEXT NOT NULL,
+            memoIds TEXT NOT NULL
           );
         `);
 
@@ -297,6 +341,111 @@ class SqliteDatabase {
     return memosWithAudio.filter((memo): memo is MemoWithAudio => memo !== null);
   }
 
+  // Save a report
+  async saveReport(report: Omit<Report, 'id'>): Promise<string> {
+    await this.ensureInitialized();
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const id = `report_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Insert report into the database
+    const stmt = this.db.prepare(`
+      INSERT INTO reports (id, title, topic, analysisType, date, reportContent, memoIds)
+      VALUES (:id, :title, :topic, :analysisType, :date, :reportContent, :memoIds)
+    `);
+    
+    stmt.run({
+      ':id': id,
+      ':title': report.title,
+      ':topic': report.topic,
+      ':analysisType': report.analysisType,
+      ':date': report.date,
+      ':reportContent': report.reportContent,
+      ':memoIds': report.memoIds
+    });
+    
+    stmt.free();
+    
+    // Save the database
+    await this.saveDb();
+    
+    return id;
+  }
+
+  // Get all reports
+  async getAllReports(): Promise<Report[]> {
+    await this.ensureInitialized();
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const result = this.db.exec(`
+      SELECT id, title, topic, analysisType, date, reportContent, memoIds 
+      FROM reports 
+      ORDER BY date DESC
+    `);
+    
+    if (result.length === 0 || result[0].values.length === 0) {
+      return [];
+    }
+    
+    return result[0].values.map(row => ({
+      id: row[0] as string,
+      title: row[1] as string,
+      topic: row[2] as string,
+      analysisType: row[3] as string,
+      date: row[4] as string,
+      reportContent: row[5] as string,
+      memoIds: row[6] as string
+    }));
+  }
+
+  // Get a report by ID
+  async getReport(id: string): Promise<Report | null> {
+    await this.ensureInitialized();
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const stmt = this.db.prepare(`
+      SELECT id, title, topic, analysisType, date, reportContent, memoIds 
+      FROM reports 
+      WHERE id = :id
+    `);
+    
+    stmt.bind({ ':id': id });
+    
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return {
+        id: row.id as string,
+        title: row.title as string,
+        topic: row.topic as string,
+        analysisType: row.analysisType as string,
+        date: row.date as string,
+        reportContent: row.reportContent as string,
+        memoIds: row.memoIds as string
+      };
+    }
+    
+    stmt.free();
+    return null;
+  }
+
+  // Delete a report
+  async deleteReport(id: string): Promise<void> {
+    await this.ensureInitialized();
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const stmt = this.db.prepare('DELETE FROM reports WHERE id = :id');
+    stmt.run({ ':id': id });
+    stmt.free();
+    
+    // Save the database
+    await this.saveDb();
+  }
+
   // Import data from the old IndexedDB database (migration)
   async importFromOldDb(oldMemos: MemoWithAudio[]): Promise<void> {
     await this.ensureInitialized();
@@ -387,7 +536,7 @@ export function useDatabase() {
 }
 
 // For backward compatibility and data migration
-export async function createLocalDatabase() {
+async function createLocalDatabase() {
   // This is a shim to maintain compatibility with the old code
   // while we transition to the new database
   

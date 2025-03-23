@@ -13,7 +13,7 @@ export function getLocalDateString(isoString: string): string {
 /**
  * Get a Date object representing only the date portion (year, month, day) in local time
  */
-export function getLocalDateOnly(isoString: string): Date {
+function getLocalDateOnly(isoString: string): Date {
   const date = new Date(isoString);
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -66,7 +66,7 @@ export function isSameLocalDay(date1: Date | string, date2: Date | string): bool
 /**
  * Format a date for display according to the user's locale
  */
-export function formatDateForDisplay(date: Date | string): string {
+function formatDateForDisplay(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toLocaleDateString();
 }

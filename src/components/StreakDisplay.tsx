@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import { Flame, Trophy, Calendar, CheckCircle } from 'lucide-react';
 import { StreakData } from '../hooks/useMemos';
 import { isSameLocalDay } from '../utils/dateUtils';
@@ -7,7 +7,7 @@ interface StreakDisplayProps {
   streakData: StreakData;
 }
 
-const StreakDisplay: React.FC<StreakDisplayProps> = ({ streakData }) => {
+const StreakDisplay: React.FC<StreakDisplayProps> = memo(({ streakData }) => {
   const { currentStreak, longestStreak, lastRecordDate } = streakData;
   const [showDetails, setShowDetails] = useState(false);
   
@@ -109,6 +109,6 @@ const StreakDisplay: React.FC<StreakDisplayProps> = ({ streakData }) => {
       </div>
     </div>
   );
-};
+});
 
 export default StreakDisplay;

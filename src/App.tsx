@@ -1,31 +1,53 @@
-import React, { useState } from 'react';
+import React, { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-
-// Pages
-import Dashboard from './pages/Dashboard';
-import RecordMemo from './pages/RecordMemo';
-import ViewMemos from './pages/ViewMemos';
-import PatientReports from './pages/PatientReports';
-import DoctorReports from './pages/DoctorReports';
-import AIReportGenerator from './pages/AIReportGenerator';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import Layout from './components/Layout';
+
+// Loader component
+const PageLoader = () => (
+  <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-500 rounded-full animate-spin"></div>
+  </div>
+);
+
+// Lazy-loaded pages to improve initial load performance
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const RecordMemo = lazy(() => import('./pages/RecordMemo'));
+const ViewMemos = lazy(() => import('./pages/ViewMemos'));
+const AIReportGenerator = lazy(() => import('./pages/AIReportGenerator'));
 
 function App() {
   return (
     <div className="min-h-screen bg-gray-50">
-      <Toaster position="top-center" />
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="record" element={<RecordMemo />} />
-          <Route path="memos" element={<ViewMemos />} />
-          <Route path="patient-reports" element={<PatientReports />} />
-          <Route path="doctor-reports" element={<DoctorReports />} />
-          <Route path="ai-reports" element={<AIReportGenerator />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
+      <ErrorBoundary>
+        <Toaster position="top-center" />
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={
+              <Suspense fallback={<PageLoader />}>
+                <Dashboard />
+              </Suspense>
+            } />
+            <Route path="record" element={
+              <Suspense fallback={<PageLoader />}>
+                <RecordMemo />
+              </Suspense>
+            } />
+            <Route path="memos" element={
+              <Suspense fallback={<PageLoader />}>
+                <ViewMemos />
+              </Suspense>
+            } />
+            <Route path="reports" element={
+              <Suspense fallback={<PageLoader />}>
+                <AIReportGenerator />
+              </Suspense>
+            } />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </ErrorBoundary>
     </div>
   );
 }
