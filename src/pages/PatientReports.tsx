@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, FileDown, Calendar, CheckCircle2 } from 'lucide-react';
 import { useMemos } from '../hooks/useMemos';
 import toast from 'react-hot-toast';
+import { getLocalDateString, isSameLocalDay } from '../utils/dateUtils';
 
 function PatientReports() {
   const { memos } = useMemos();
@@ -14,8 +15,8 @@ function PatientReports() {
   );
   const [reportTitle, setReportTitle] = useState('My Health Summary');
   const [dateRange, setDateRange] = useState({
-    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 7 days ago
-    to: new Date().toISOString().split('T')[0] // today
+    from: getLocalDateString(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()), // 7 days ago
+    to: getLocalDateString(new Date().toISOString()) // today
   });
   const [includeDate, setIncludeDate] = useState(true);
   const [showPreview, setShowPreview] = useState(false);

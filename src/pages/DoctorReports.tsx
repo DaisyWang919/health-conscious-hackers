@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, FileDown, Calendar, CheckCircle2 } from 'lucide-react';
 import { useMemos } from '../hooks/useMemos';
 import toast from 'react-hot-toast';
+import { getLocalDateString } from '../utils/dateUtils';
 
 function DoctorReports() {
   const { memos } = useMemos();
@@ -14,8 +15,8 @@ function DoctorReports() {
   );
   const [appointmentReason, setAppointmentReason] = useState('');
   const [dateRange, setDateRange] = useState({
-    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
-    to: new Date().toISOString().split('T')[0] // today
+    from: getLocalDateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()), // 30 days ago
+    to: getLocalDateString(new Date().toISOString()) // today
   });
   const [showPreview, setShowPreview] = useState(false);
   
@@ -161,7 +162,7 @@ function DoctorReports() {
     
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Doctor_Report_${new Date().toISOString().split('T')[0]}.md`;
+    a.download = `Doctor_Report_${getLocalDateString(new Date().toISOString())}.md`;
     document.body.appendChild(a);
     a.click();
     

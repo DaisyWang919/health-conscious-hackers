@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { generateAnalysisReport } from '../utils/openai';
 import type { AnalysisReport } from '../utils/openai';
 import AIAnalysisReport from '../components/AIAnalysisReport';
+import { getLocalDateString } from '../utils/dateUtils';
 
 const analysisTypes = [
   { id: 'health', label: 'Overall Health', description: 'Comprehensive analysis of general health status, trends, and recommendations' },
@@ -25,8 +26,8 @@ function AIReportGenerator() {
   const [reportTopic, setReportTopic] = useState('My Health Status');
   const [analysisType, setAnalysisType] = useState<'health' | 'symptoms' | 'treatment' | 'general'>('health');
   const [dateRange, setDateRange] = useState({
-    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
-    to: new Date().toISOString().split('T')[0] // today
+    from: getLocalDateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()), // 30 days ago
+    to: getLocalDateString(new Date().toISOString()) // today
   });
   
   const [isGenerating, setIsGenerating] = useState(false);

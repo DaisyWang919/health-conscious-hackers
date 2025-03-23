@@ -13,6 +13,7 @@ const RecordMemo = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [audioMimeType, setAudioMimeType] = useState('audio/webm');
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -32,6 +33,23 @@ const RecordMemo = () => {
     };
   }, [audioUrl]);
 
+  // Test audio playback compatibility
+  useEffect(() => {
+    // Check which audio formats are supported
+    const audio = document.createElement('audio');
+    const supportedFormats = {
+      webm: !!audio.canPlayType('audio/webm'),
+      webmOpus: !!audio.canPlayType('audio/webm;codecs=opus'),
+      ogg: !!audio.canPlayType('audio/ogg'),
+      oggOpus: !!audio.canPlayType('audio/ogg;codecs=opus'),
+      mp4: !!audio.canPlayType('audio/mp4'),
+      mpeg: !!audio.canPlayType('audio/mpeg'),
+      wav: !!audio.canPlayType('audio/wav')
+    };
+    
+    console.log('Browser audio support:', supportedFormats);
+  }, []);
+
   const handleStartRecording = async () => {
     try {
       // Reset state
@@ -43,7 +61,40 @@ const RecordMemo = () => {
       // Get audio stream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      mediaRecorderRef.current = new MediaRecorder(stream);
+      // Create a prioritized list of MIME types to try
+      const mimeTypesToTry = [
+        'audio/webm',
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/mp4',
+        'audio/mpeg',
+        'audio/wav'
+      ];
+      
+      // Find the first supported MIME type
+      let selectedMimeType = '';
+      for (const mimeType of mimeTypesToTry) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          selectedMimeType = mimeType;
+          break;
+        }
+      }
+      
+      // If no supported type is found, default to audio/webm
+      if (!selectedMimeType) {
+        selectedMimeType = 'audio/webm';
+        console.warn('No supported MIME types found, defaulting to audio/webm');
+      }
+      
+      // Save the selected MIME type for later use
+      setAudioMimeType(selectedMimeType);
+      console.log('Using MIME type for recording:', selectedMimeType);
+      
+      // Create MediaRecorder with the supported MIME type
+      mediaRecorderRef.current = new MediaRecorder(stream, { 
+        mimeType: selectedMimeType 
+      });
       
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -52,46 +103,65 @@ const RecordMemo = () => {
       };
       
       mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        audioBlobRef.current = audioBlob;
-        const url = URL.createObjectURL(audioBlob);
-        setAudioUrl(url);
-        
-        // Start transcription
-        setIsTranscribing(true);
         try {
-          // Check if OpenAI API key is set
-          if (!import.meta.env.VITE_OPENAI_API_KEY || 
-              import.meta.env.VITE_OPENAI_API_KEY === 'sk-your-openai-api-key-here') {
-            // If no API key, use placeholder text
-            setTimeout(() => {
-              setTranscript("I've been experiencing some mild headaches in the morning " +
-                "and occasional dizziness when standing up too quickly. My blood pressure " +
-                "readings have been a bit higher than usual, around 135/85.");
-              setIsTranscribing(false);
-            }, 1000);
-            
-            toast.warning('Using placeholder transcription. Add your OpenAI API key in .env.local for actual transcription.');
-          } else {
-            // Actual API call to OpenAI Whisper
-            const transcribedText = await transcribeAudio(audioBlob);
-            setTranscript(transcribedText);
+          // Create a blob with the correct MIME type
+          const audioBlob = new Blob(audioChunksRef.current, { type: selectedMimeType });
+          audioBlobRef.current = audioBlob;
+          const url = URL.createObjectURL(audioBlob);
+          setAudioUrl(url);
+          
+          // Check if the audio is playable
+          const audio = new Audio();
+          audio.src = url;
+          
+          audio.onloadedmetadata = () => {
+            console.log('Audio metadata loaded successfully');
+          };
+          
+          audio.onerror = (e) => {
+            console.error('Error loading audio:', e);
+          };
+          
+          // Start transcription
+          setIsTranscribing(true);
+          try {
+            // Check if OpenAI API key is set
+            if (!import.meta.env.VITE_OPENAI_API_KEY || 
+                import.meta.env.VITE_OPENAI_API_KEY === 'sk-your-openai-api-key-here') {
+              // If no API key, use placeholder text
+              setTimeout(() => {
+                setTranscript("I've been experiencing some mild headaches in the morning " +
+                  "and occasional dizziness when standing up too quickly. My blood pressure " +
+                  "readings have been a bit higher than usual, around 135/85.");
+                setIsTranscribing(false);
+              }, 1000);
+              
+              toast.warning('Using placeholder transcription. Add your OpenAI API key in .env.local for actual transcription.');
+            } else {
+              // Actual API call to OpenAI Whisper
+              const transcribedText = await transcribeAudio(audioBlob);
+              setTranscript(transcribedText);
+            }
+          } catch (error) {
+            console.error('Transcription error:', error);
+            if (error instanceof Error) {
+              setTranscriptionError(error.message);
+              toast.error(error.message);
+            } else {
+              setTranscriptionError('Failed to transcribe audio');
+              toast.error('Failed to transcribe audio');
+            }
+          } finally {
+            setIsTranscribing(false);
           }
         } catch (error) {
-          console.error('Transcription error:', error);
-          if (error instanceof Error) {
-            setTranscriptionError(error.message);
-            toast.error(error.message);
-          } else {
-            setTranscriptionError('Failed to transcribe audio');
-            toast.error('Failed to transcribe audio');
-          }
-        } finally {
-          setIsTranscribing(false);
+          console.error('Error processing recorded audio:', error);
+          toast.error('Failed to process the recorded audio');
         }
       };
       
-      mediaRecorderRef.current.start();
+      // Start recording with a short time slice to get data frequently
+      mediaRecorderRef.current.start(100); 
       setIsRecording(true);
       
       // Set up timer to track recording duration
@@ -130,11 +200,12 @@ const RecordMemo = () => {
     setIsSaving(true);
     
     try {
-      // Save memo to IndexedDB
+      // Save memo to IndexedDB with the correct MIME type
       await addMemo({
         transcript,
         audioBlob: audioBlobRef.current,
         date: new Date().toISOString(),
+        audioMimeType: audioMimeType
       });
       
       toast.success('Voice memo saved successfully!');
@@ -151,6 +222,16 @@ const RecordMemo = () => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Test audio playback of the recording
+  const testPlayback = () => {
+    if (!audioUrl) return;
+    
+    const audio = new Audio(audioUrl);
+    audio.play().catch(err => {
+      console.error('Playback test failed:', err);
+    });
   };
 
   return (
@@ -188,12 +269,13 @@ const RecordMemo = () => {
           {isRecording ? (
             <div className="text-center">
               <p className="text-xl font-semibold text-red-500">{formatTime(recordingTime)}</p>
-              <p className="text-gray-500">Recording...</p>
+              <p className="text-gray-500">Recording... (Format: {audioMimeType.split('/')[1]})</p>
             </div>
           ) : audioUrl ? (
             <div className="text-center">
               <p className="text-gray-700 font-medium">Recording complete</p>
               <audio className="mt-4" controls src={audioUrl} />
+              <p className="text-xs text-gray-500 mt-1">Format: {audioMimeType.split('/')[1]}</p>
             </div>
           ) : (
             <p className="text-gray-600">
